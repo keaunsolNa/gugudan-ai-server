@@ -144,6 +144,8 @@ async def oauth_callback(
     # Verify state matches cookie (CSRF protection)
     cookie_state = request.cookies.get("oauth_state")
 
+    print(f"request.cookies {request.cookies}")
+
     if not cookie_state or cookie_state != state:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
