@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from conversation.adapter.input.web.conversation_router import conversation_router
+
 # Load environment variables first
 load_dotenv()
 
@@ -46,7 +48,7 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(auth_router, prefix="/api/v1")
-
+app.include_router(conversation_router, prefix="/conversation")
 
 @app.get("/health")
 async def health_check():
