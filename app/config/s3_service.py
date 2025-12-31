@@ -1,10 +1,13 @@
 import boto3
 import uuid
+import datetime
 from io import BytesIO
 from PIL import Image
 from pathlib import Path
-from datetime import datetime
 from fastapi import UploadFile
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from botocore.signers import CloudFrontSigner
 from app.config.settings import settings
 
 
@@ -18,13 +21,65 @@ class S3Service:
         )
         self.bucket = settings.AWS_S3_BUCKET
 
+        self.cf_domain = settings.CLOUDFRONT_DOMAIN
+        self.cf_key_id = settings.CLOUDFRONT_KEY_ID
+
+        raw_key = settings.CLOUDFRONT_PRIVATE_KEY
+        raw_key = raw_key.strip().strip('"').strip("'")
+
+        raw_key = raw_key.replace("\\n", "\n")
+
+        self.private_key_content = raw_key
+
+    def _rsa_signer(self, message):
+        """환경 변수로부터 프라이빗 키를 로드하여 메시지에 서명합니다."""
+        private_key = serialization.load_pem_private_key(
+            self.private_key_content.encode('utf-8'),
+            password=None
+        )
+        return private_key.sign(
+            message,
+            padding.PKCS1v15(),
+            hashes.SHA1()
+        )
+
+    def get_signed_url(self, file_path: str, expire_minutes: int = 60) -> str:
+        if not file_path:
+            return ""
+
+        try:
+            if file_path.startswith("http"):
+                # CloudFront 도메인이 이미 포함되어 있다면 경로만 떼어냄
+                if self.cf_domain in file_path:
+                    path = file_path.split(f"{self.cf_domain}/")[-1]
+                else:
+                    return file_path  # 다른 도메인이면 그대로 반환
+            else:
+                path = file_path
+
+            path = path.lstrip("/")
+            url = f"https://{self.cf_domain}/{path}"
+
+            expire_date = datetime.datetime.utcnow() + datetime.timedelta(minutes=expire_minutes)
+            signer = CloudFrontSigner(self.cf_key_id, self._rsa_signer)
+
+            signed_url = signer.generate_presigned_url(url, date_less_than=expire_date)
+
+            print(f"--- Generated Signed URL: {signed_url}")
+
+            return signed_url
+
+        except Exception as e:
+            print(f"--- Signed URL Error: {str(e)}")
+            return file_path
+
     async def upload_file(self, file: UploadFile, account_id: int) -> str:
         file_ext = Path(file.filename).suffix.lower()
         # 확장자가 없는 경우 처리
         if not file_ext:
             file_ext = ".jpg"
 
-        now = datetime.now()
+        now = datetime.datetime.now()
         partition_path = now.strftime("%Y/%m/%d")
         file_name = f"{uuid.uuid4()}{file_ext}"
         full_path = f"chat/{partition_path}/{account_id}/{file_name}"
@@ -44,19 +99,7 @@ class S3Service:
                 StorageClass='INTELLIGENT_TIERING'
             )
 
-            # 2. ✅ 핵심: 10분 동안만 유효한 임시 보안 URL 생성
-            # 이 URL은 버킷이 '모든 퍼블릭 액세스 차단' 상태여도 작동합니다.
-            presigned_url = self.s3.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': self.bucket,
-                    'Key': full_path
-                },
-                ExpiresIn=600  # 600초(10분) 후 자동 만료
-            )
-
-            # DB와 GPT에게는 이 임시 보안 URL이 전달됩니다.
-            return presigned_url
+            return full_path
 
         except Exception as e:
             print(f"S3 Upload Error Detail: {str(e)}")

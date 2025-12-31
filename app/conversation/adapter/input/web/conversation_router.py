@@ -38,8 +38,12 @@ async def upload_file(
     """
     s3_service = S3Service()
     try:
-        url = await s3_service.upload_file(file, account_id)
-        return {"file_url": url}
+        file_path = await s3_service.upload_file(file, account_id)
+        signed_url = s3_service.get_signed_url(file_path)
+        return {
+            "file_url": signed_url,
+            "file_path": file_path
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
 
@@ -71,6 +75,7 @@ async def stream_chat_auto(
 
     chat_room_repo = ChatRoomRepositoryImpl(db)
     chat_message_repo = ChatMessageRepositoryImpl(db)
+    s3_service = S3Service()
 
     # 1. room_id 판단 로직 보정
     # 프론트에서 'null' 문자열이 오거나 아예 없을 때를 대비
@@ -101,7 +106,8 @@ async def stream_chat_auto(
         chat_message_repo=chat_message_repo,
         llm_chat_port=llm_chat_port,
         usage_meter=usage_meter,
-        crypto_service=crypto_service
+        crypto_service=crypto_service,
+        s3_service=s3_service
     )
 
     generator = usecase.execute(
@@ -201,11 +207,38 @@ async def get_room_messages(
         account_id: int = Depends(get_current_account_id),
         db: Session = Depends(get_db_session)
 ):
-    # 2. 함수 안에서 필요한 리포지토리 생성
     from app.conversation.infrastructure.repository.chat_message_repository_impl import ChatMessageRepositoryImpl
-
     chat_message_repo = ChatMessageRepositoryImpl(db)
+    s3_service = S3Service()
 
-    # 3. UseCase 실행
     uc = GetChatMessagesUseCase(chat_message_repo, crypto_service)
-    return await uc.execute(room_id, account_id)
+    messages = await uc.execute(room_id, account_id)
+
+    result = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            content = msg.get("content")
+            message_id = msg.get("message_id") or msg.get("id")
+            user_feedback = msg.get("user_feedback")
+            raw_urls = msg.get("file_urls", [])
+        else:
+            role = getattr(msg, "role", None)
+            content = getattr(msg, "content", None)
+            message_id = getattr(msg, "message_id", getattr(msg, "id", None))
+            user_feedback = getattr(msg, "user_feedback", None)
+            raw_urls = getattr(msg, "file_urls", [])
+
+        converted_urls = []
+        if raw_urls and isinstance(raw_urls, list):
+            converted_urls = [s3_service.get_signed_url(u) for u in raw_urls]
+
+        result.append({
+            "message_id": message_id,
+            "role": role,
+            "content": content,
+            "user_feedback": user_feedback,
+            "file_urls": converted_urls
+        })
+
+    return result

@@ -10,12 +10,14 @@ class StreamChatUsecase:
             llm_chat_port,
             usage_meter,
             crypto_service,
+            s3_service,
     ):
         self.chat_room_repo = chat_room_repo
         self.chat_message_repo = chat_message_repo
         self.llm_chat_port = llm_chat_port
         self.usage_meter = usage_meter
         self.crypto_service = crypto_service
+        self.s3_service = s3_service
 
     async def execute(
             self,
@@ -92,8 +94,11 @@ class StreamChatUsecase:
 
         # 4. AI 응답 스트리밍
         assistant_full_message = ""
+
+        gpt_ready_urls = [self.s3_service.get_signed_url(url) for url in (file_urls or [])]
+
         try:
-            async for chunk in self.llm_chat_port.call_gpt(prompt=final_prompt, file_urls=file_urls):
+            async for chunk in self.llm_chat_port.call_gpt(prompt=final_prompt, file_urls=gpt_ready_urls):
                 assistant_full_message += chunk
                 yield chunk.encode("utf-8")
         except Exception as e:
